@@ -168,6 +168,11 @@ class ResponsiveApp:
     
     def __init__(self, root, aspect_ratio=(9, 16)):
         # 1. 초기 설정 및 변수 초기화
+        self.current_pokemon_id = None
+        self.current_pokemon_name = "미정"
+        self.current_level = 1     # XP/레벨 시스템에 필요한 기본값
+        self.current_xp = 0
+        self.xp_needed = 100
         self.root = root
         self.aspect_ratio = aspect_ratio
         self.root.title("ToDoMonster")
@@ -196,6 +201,10 @@ class ResponsiveApp:
         
         # 💡 [수정] 스레드 풀 초기화
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
+        
+        self.loading_gif_frames = self._load_gif_frames("loading.gif") # loading.gif 파일이 있어야 함
+        self.is_loading_gif_active = False
+        self.loading_after_id = None
         
         # 💡 [수정] 이미지/GIF 변수 통합 및 초기화
         self.POKEMON_IMAGE_SIZE = (190, 190) # 포켓몬/GIF 표시 크기 고정 (프레임 200px보다 작게)
@@ -244,7 +253,7 @@ class ResponsiveApp:
         self.task_entry.bind('<KeyRelease>', self._check_korean_input)
         
         # 💡 GIF 프레임 로드
-        self._load_gif_frames()
+        self.loading_gif_frames = self._load_gif_frames("loading.gif")
         
         # 💡 [수정] 로그인 상태가 아니면 로딩 애니메이션 시작
         if not self.is_logged_in:
@@ -265,21 +274,23 @@ class ResponsiveApp:
         """
         로딩 GIF 애니메이션을 시작하고, self.image_label에 표시합니다.
         """
+        if self.loading_gif_frames and not self.is_loading_gif_active:
+            # 💡 [수정] 로딩 애니메이션 활성화 플래그 설정
+            self.is_loading_gif_active = True
+            self.frame_index = 0
+            self._animate_loading()
+        elif not self.loading_gif_frames:
+            # GIF 프레임이 없을 경우 텍스트 표시
+            self.image_label.config(text="포켓몬 로딩 중...", font=self.korean_font)
+        
+    def _stop_loading_animation(self):
+        """로딩 애니메이션을 중지하고 예약된 다음 호출을 취소합니다."""
         if self.is_loading_gif_active:
-            return
-        
-        self.is_loading_gif_active = True
-        self.frame_index = 0
-        self._animate_loading() # 애니메이션 루프 시작
-        
-    def _stop_loading_animation(self): # 💡 [수정] hide_loading_animation -> _stop_loading_animation
-        """
-        로딩 GIF 애니메이션을 중지하고, self.is_loading_gif_active 상태를 변경합니다.
-        """
-        if self.loading_after_id:
-            self.root.after_cancel(self.loading_after_id)
-            self.loading_after_id = None
-        self.is_loading_gif_active = False
+            self.is_loading_gif_active = False
+            # 💡 [핵심] 예약된 다음 애니메이션 호출을 취소합니다.
+            if self.loading_after_id:
+                self.root.after_cancel(self.loading_after_id)
+                self.loading_after_id = None
             
     def _on_closing(self):
         """윈도우가 닫힐 때 사용자 데이터를 저장하고 앱을 종료합니다."""
@@ -310,34 +321,32 @@ class ResponsiveApp:
         
         self._configure_task_list()
         
-    def _update_pokemon_display(self, raw_image):
-        """PIL 이미지를 받아 고정 크기로 리사이즈하고 레이블에 표시합니다."""
-        img_width, img_height = self.POKEMON_IMAGE_SIZE
+    def _update_pokemon_display(self, pil_image):
+        """
+        PIL Image 객체를 받아 크기를 조정한 후 Tkinter 레이블에 표시합니다.
         
-        if img_width <= 0 or img_height <= 0:
-            return
-        
-        # 💡 [수정] NEAREST 필터로 픽셀 아트 느낌 유지
-        image_copy = raw_image.copy()
-        image_copy.thumbnail((img_width, img_height), Image.Resampling.NEAREST)
-        
-        resized_image = Image.new("RGBA", (img_width, img_height), "Ivory")
-        
-        paste_x = (img_width - image_copy.width) // 2
-        paste_y = (img_height - image_copy.height) // 2
-        
-        resized_image.paste(image_copy, (paste_x, paste_y), image_copy.convert("RGBA"))
-        tk_image = ImageTk.PhotoImage(resized_image)
-        
-        self.pokemon_image = tk_image
-        self.image_label.config(
-            image=self.pokemon_image, 
-            width=img_width, 
-            height=img_height, 
-            text="", 
-            compound="center"
-        )
-        self.image_label.image = self.pokemon_image
+        Args:
+            pil_image (Image): 표시할 PIL Image 객체.
+        """
+        try:
+            target_size = self.POKEMON_IMAGE_SIZE
+            
+            # 크기 조정
+            resized_image = pil_image.resize(target_size, Image.Resampling.LANCZOS)
+            
+            # ImageTk 객체 생성 (Tkinter가 사용할 수 있는 형식)
+            self.current_tk_image = ImageTk.PhotoImage(resized_image)
+            
+            # 💡 [핵심] 레이블 업데이트
+            self.image_label.config(image=self.current_tk_image, text="")
+            self.image_label.image = self.current_tk_image # 가비지 컬렉션 방지
+            
+            # 💡 [추가] 로딩 완료 시 포켓몬 정보 업데이트 (선택 사항)
+            # self.pokemon_info_label.config(text=f"이름: {self.current_pokemon_name}, ID: {self.current_pokemon_id}")
+            
+        except Exception as e:
+            print(f"포켓몬 디스플레이 업데이트 중 오류 발생: {e}")
+            self.image_label.config(text="이미지 표시 오류")
         
     def _configure_task_list(self):
         """
@@ -371,79 +380,60 @@ class ResponsiveApp:
         
     # ------------------- GIF 로딩 및 애니메이션 -------------------
     
-    def _load_gif_frames(self):
-        """💡 [수정] GIF 파일의 모든 프레임을 PIL Image 객체로 로드합니다."""
-        self.loading_gif_frames = []
-        try:
-            gif = Image.open(self.LOADING_IMAGE_PATH)
-            for i in range(gif.n_frames):
-                frame = gif.copy()
-                self.loading_gif_frames.append(frame) # PIL Image 원본 저장
-            
-            print(f"로딩 GIF: {gif.n_frames} 프레임 로드 완료.")
-            
-            if not self.loading_gif_frames:
-                print("경고: loading.gif에서 프레임을 로드하지 못했습니다.")
-                
-        except FileNotFoundError:
-            print(f"경고: {self.LOADING_IMAGE_PATH} 파일을 찾을 수 없습니다.")
-        except Exception as e:
-            print(f"경고: GIF 로딩 중 알 수 없는 오류 발생: {e}")
+    def _load_gif_frames(self, filename):
+        """지정된 GIF 파일에서 프레임을 로드하고 ImageTk 객체 목록으로 반환합니다."""
         
-        # 💡 로드 실패 시 대체 이미지 생성
-        if not self.loading_gif_frames:
-            empty_img = Image.new('RGB', self.POKEMON_IMAGE_SIZE, color='#F0F0F0') # Ivory색과 비슷하게
-            self.loading_gif_frames.append(empty_img)
+        # 💡 [필수] 이미지 크기 조정을 위해 self.POKEMON_IMAGE_SIZE 변수를 사용합니다.
+        # 이 변수가 __init__에 (가로, 세로) 튜플 형태로 정의되어 있다고 가정합니다.
+        try:
+            target_size = self.POKEMON_IMAGE_SIZE # 예: (180, 180)
+        except AttributeError:
+            print("경고: POKEMON_IMAGE_SIZE가 정의되지 않았습니다. 기본값 (180, 180) 사용.")
+            target_size = (180, 180) # 안전을 위한 기본값
+
+        try:
+            img = Image.open(filename)
+            frames = []
+            for i in range(img.n_frames):
+                img.seek(i)
+                
+                frame = img.copy().convert("RGBA") 
+                
+                # 💡 [핵심 수정] 로드된 프레임의 크기를 목표 크기로 조정 (ANTIALIAS 사용)
+                frame = frame.resize(target_size, Image.Resampling.LANCZOS)
+                
+                frames.append(ImageTk.PhotoImage(frame))
+            return frames
+        except FileNotFoundError:
+            print(f"오류: GIF 파일 '{filename}'을 찾을 수 없습니다. 현재 디렉토리에 있는지 확인하세요.")
+            return []
+        except Exception as e:
+            print(f"GIF 파일 로드 중 오류 발생: {e}")
+            return []
             
     def _animate_loading(self):
-        """💡 [수정] 로딩 GIF 애니메이션을 실행합니다."""
+        """GIF의 다음 프레임을 표시하고 애니메이션 루프를 예약합니다."""
+        if self.is_loading_gif_active and self.loading_gif_frames:
+            # 현재 프레임 인덱스 업데이트
+            self.current_gif_frame_index = (self.current_gif_frame_index + 1) % len(self.loading_gif_frames)
+            
+            # 다음 프레임 표시
+            frame = self.loading_gif_frames[self.current_gif_frame_index]
+            self.image_label.config(image=frame)
+            
+            # 💡 [핵심] 다음 프레임을 표시하도록 50ms 후에 재귀적으로 예약
+            # 이 코드가 없으면 GIF는 첫 프레임에서 멈춥니다.
+            self.loading_after_id = self.root.after(50, self._animate_loading)
+            
+    def show_loading_animation(self):
+        """로딩 애니메이션을 시작합니다."""
         if not self.is_loading_gif_active:
-            return
-        
-        if self.loading_gif_frames:
-            if self.frame_index >= len(self.loading_gif_frames):
-                self.frame_index = 0
-                
-            frame = self.loading_gif_frames[self.frame_index]
+            self.is_loading_gif_active = True
+            self.image_label.config(text="")
+            self.current_gif_frame_index = -1  # 0부터 시작하도록 -1로 초기화
             
-            img_width, img_height = self.POKEMON_IMAGE_SIZE
-            
-            if img_width > 0 and img_height > 0:
-                image_copy = frame.copy()
-                image_copy.thumbnail((img_width, img_height), Image.Resampling.NEAREST)
-                
-                resized_frame = Image.new("RGBA", (img_width, img_height), "Ivory")
-                paste_x = (img_width - image_copy.width) // 2
-                paste_y = (img_height - image_copy.height) // 2
-                resized_frame.paste(image_copy, (paste_x, paste_y), image_copy.convert("RGBA"))
-
-                tk_frame = ImageTk.PhotoImage(resized_frame)
-            
-                self.image_label.config(
-                image=tk_frame, 
-                width=img_width, 
-                height=img_height,
-                text=""
-                )
-                self.image_label.image = tk_frame
-                self.frame_index += 1
-            
-                self.loading_after_id = self.root.after(100, self._animate_loading)
-            else:
-                self.loading_after_id = self.root.after(100, self._animate_loading)
-                return
-        else:
-            # GIF가 로드되지 않은 경우, 텍스트 표시
-            img_width, img_height = self.POKEMON_IMAGE_SIZE
-            self.image_label.config(
-                text="포켓몬 로딩 중...", 
-                width=img_width,
-                height=img_height,
-                compound="center",
-                font=("DungGeunMo", 14)
-            )
-            # 애니메이션 루프를 계속 실행 (GIF 로드가 될 때까지 텍스트를 표시)
-            self.loading_after_id = self.root.after(100, self._animate_loading)
+            # 💡 [핵심] 첫 프레임 표시 및 애니메이션 루프 시작
+            self._animate_loading()
             
     # ------------------- API 통신 및 포켓몬 로딩 -------------------
     
@@ -472,18 +462,64 @@ class ResponsiveApp:
         except requests.exceptions.RequestException as e:
             print(f"포켓몬 데이터 로드 오류 (ID: {pokemon_id}): {e}")
             return None
+        
+    def _fetch_evolution_chain_url_async(self, pokemon_id):
+        """진화 체인 URL 로드를 백그라운드 스레드로 예약하고 완료 시 콜백을 설정합니다."""
+        # 1. 스레드풀을 사용하여 URL을 가져오는 함수를 호출합니다.
+        future = self.executor.submit(self._fetch_evolution_chain_url, pokemon_id)
+        
+        # 2. 작업 완료 시 _check_evolution_chain_url_completion 콜백을 호출하도록 설정합니다.
+        future.add_done_callback(lambda f: self.root.after(0, self._check_evolution_chain_url_completion, f))
 
-    def _fetch_evolution_chain_url(self, species_id):
-        """PokeAPI에서 종(Species) 데이터를 가져와 진화 체인 URL을 반환합니다."""
+    def _fetch_evolution_chain_url(self, pokemon_id):
+        """(스레드에서 실행) 진화 체인 URL을 가져옵니다."""
+        # 이 함수는 API 호출 로직을 담고, 성공 시 URL 문자열을 반환해야 합니다.
         try:
-            url = f"https://pokeapi.co/api/v2/pokemon-species/{species_id}/"
-            response = requests.get(url, timeout=10)
+            # 예시: 포켓몬 종(species) 정보 API 호출
+            species_url = f"https://pokeapi.co/api/v2/pokemon-species/{pokemon_id}"
+            response = requests.get(species_url, timeout=5)
             response.raise_for_status()
             data = response.json()
-            return data['evolution_chain']['url']
+            
+            # 진화 체인 URL 추출
+            evo_chain_url = data.get('evolution_chain', {}).get('url')
+            return evo_chain_url
+            
         except requests.exceptions.RequestException as e:
-            print(f"종 데이터 로드 오류 (ID: {species_id}): {e}")
-            return None
+            print(f"진화 종 URL 로드 오류: {e}")
+            return None # 실패 시 None 반환
+        
+    def _check_evolution_chain_url_completion(self, future):
+        """진화 체인 URL 로드 완료 후 호출됩니다."""
+        try:
+            evo_chain_url = future.result()
+            
+            if evo_chain_url:
+                # 💡 [핵심] URL을 인수로 사용하여 다음 단계인 데이터 로드를 시작합니다.
+                self._fetch_evolution_chain_data_async(evo_chain_url)
+            else:
+                print("진화 체인 URL을 찾을 수 없습니다. 진화 정보 업데이트를 건너뜁니다.")
+                
+        except Exception as e:
+            print(f"진화 체인 URL 콜백 처리 중 오류 발생: {e}")
+            # 여기서 오류가 발생하여 누락된 함수를 호출했기 때문에 기존 오류가 났을 수 있습니다.
+
+    def _fetch_evolution_chain_data_async(self, evo_chain_url):
+        """진화 체인 데이터를 백그라운드 스레드로 예약합니다."""
+        # 💡 [핵심] 이제 누락된 함수를 호출할 수 있습니다.
+        future = self.executor.submit(self._fetch_evolution_chain_data, evo_chain_url)
+        future.add_done_callback(lambda f: self.root.after(0, self._check_evolution_chain_data_completion, f))
+
+    # 💡 [해결] 실제로 누락된 함수 _fetch_evolution_chain_data를 정의합니다.
+    def _fetch_evolution_chain_data(self, evo_chain_url):
+        """(스레드에서 실행) 진화 체인 데이터 자체를 가져와서 파싱합니다."""
+        # ... 여기에 진화 데이터를 가져와 파싱하는 로직을 구현합니다.
+        return None # 실제 진화 체인 정보를 반환해야 합니다.
+        
+    def _check_evolution_chain_data_completion(self, future):
+        """진화 체인 데이터 로드 완료 후 호출됩니다."""
+        # ... 여기에 진화 정보를 UI에 업데이트하는 로직을 구현합니다.
+        pass
 
     def _parse_evolution_chain(self, url):
         """진화 체인 URL에서 포켓몬 ID 목록을 파싱합니다."""
@@ -517,12 +553,86 @@ class ResponsiveApp:
         주어진 ID의 포켓몬 데이터를 로드하고 진화 체인을 구성합니다.
         (💡 [수정] 로딩 애니메이션을 먼저 시작합니다.)
         """
-        # 1. 💡 로딩 애니메이션 시작
-        self.show_loading_animation()
         
-        # 2. 💡 스레드에서 실제 데이터 로드 실행
-        self.executor.submit(self._load_pokemon_data_thread, pokemon_id)
+        if not self.is_loading_gif_active:
+            self.show_loading_animation()
+        
+        pokemon_future = self.executor.submit(self._fetch_pokemon_data, pokemon_id)
+        
+        evolution_future = self.executor.submit(self._fetch_evolution_chain_url, pokemon_id)
+        evolution_future.add_done_callback(self._load_evolution_chain_done)
+        
+        self.root.after(100, self._check_pokemon_load_completion, pokemon_future)
+        
+    def _load_evolution_chain_done(self, future):
+        """
+        [콜백 함수] 진화 체인 URL 로드가 완료된 후 호출되어 진화 정보를 로드하는
+        다음 스레드 작업을 시작합니다.
+        
+        Args:
+            future: concurrent.futures.Future 객체. 이 객체의 result()는
+                    진화 체인 URL 문자열을 반환합니다.
+        """
+        try:
+            # _fetch_evolution_chain_url의 결과(진화 체인 URL)를 가져옵니다.
+            chain_url = future.result()
+            
+            if chain_url:
+                print(f"진화 체인 URL 로드 완료: {chain_url}")
+                # 💡 진화 체인 URL을 사용하여 실제 진화 정보를 로드하는 새 스레드 작업 시작
+                # 이 함수(_fetch_evolution_chain_data)가 다음 포켓몬 ID 목록을 self.evolution_chain_ids에 저장해야 합니다.
+                self.executor.submit(self._fetch_evolution_chain_data, chain_url)
+            else:
+                print("진화 체인 URL 로드 실패. (진화 체인 정보 없음)")
+                # 진화 체인이 없는 포켓몬일 수 있으므로, 오류 대신 빈 리스트로 초기화합니다.
+                self.evolution_chain_ids = []
+                
+        except Exception as e:
+            # 스레드 실행 중 발생한 예외 처리
+            print(f"진화 체인 URL 콜백 처리 중 오류 발생: {e}")
+            self.evolution_chain_ids = []
+        
+    def _check_pokemon_load_completion(self, future):
+        """백그라운드 포켓몬 로드 작업이 완료되었는지 확인하고 UI를 업데이트합니다."""
+        if future.done():
+            self._stop_loading_animation() 
+            try:
+                # 💡 [핵심] 스레드 작업 결과를 가져옵니다. 
+                # (pil_image, name, id) 튜플을 기대합니다.
+                result = future.result()
+                
+                # 1. 결과 유효성 및 타입 검사
+                # 결과가 튜플이고, 첫 번째 요소가 'resize' 속성을 가진 Image 객체인지 확인
+                if (isinstance(result, tuple) and 
+                    len(result) == 3 and 
+                    hasattr(result[0], 'resize')):
+                    
+                    pil_image, name, p_id = result
+                    
+                    # 2. [오류 2 해결] 다음 콜백을 위해 필수 속성 저장
+                    self.current_pokemon_name = name
+                    self.current_pokemon_id = p_id
+                    
+                    # 3. 이미지 업데이트
+                    self._update_pokemon_display(pil_image)
+                    
+                    # 4. 정보 업데이트 (레벨 정보가 설정되어 있어야 함)
+                    # self.current_level, self.current_xp, self.xp_needed가 정의되어 있다고 가정
+                    self.xp_info_label.config(text=f"Lv.{self.current_level} {name} ({self.current_xp}/{self.xp_needed})")
+                    
+                    # 5. 진화 체인 로딩 시작 (다음 단계 콜백 호출)
+                    # p_id(포켓몬 ID)를 인수로 전달하여 진화 체인 URL 로드를 시작합니다.
+                    self._fetch_evolution_chain_url_async(p_id) 
 
+                else:
+                    # 데이터가 딕셔너리이거나 잘못된 형식일 때의 처리
+                    self.image_label.config(text="이미지 로드 실패 (데이터 형식 오류)", font=self.korean_font)
+
+            except Exception as e:
+                # 로드 중 오류 발생 시 처리
+                print(f"포켓몬 데이터 로드 중 치명적인 오류 발생: {e}")
+                self.image_label.config(text="이미지 로드 실패", font=self.korean_font)
+                
     def _load_pokemon_data_thread(self, pokemon_id):
         """(스레드 실행용) 포켓몬 데이터와 이미지를 로드합니다."""
         
@@ -771,6 +881,32 @@ class ResponsiveApp:
     def _load_user_data_if_exists(self):
         """앱 시작 시 마지막 로그인 사용자 데이터가 있으면 로드합니다."""
         pass # 로그인 창에서 처리
+    
+    def _logout_user(self):
+        """현재 사용자를 로그아웃하고 모든 데이터를 저장한 후, 로그인 화면으로 돌아갑니다."""
+        if self.current_user:
+            #self._save_user_data(self.current_user)
+            self.current_user = None
+            self.is_logged_in = False
+            
+            # XP, 레벨 등 임시값으로 초기화
+            self.xp = 0
+            self.level = 1
+            self.current_pokemon_id = 1
+            
+            # UI 초기화 (태스크 리스트, XP 바 등)
+            self.clear_task_list()
+            self.update_xp_bar() 
+            
+            # 포켓몬 이미지 초기화 및 로딩 애니메이션 다시 시작
+            self.image_label.config(image='', text="로그인이 필요합니다.")
+            self.show_loading_animation()
+            
+            # 로그인 창 다시 표시
+            self.root.after(100, self._show_login_window)
+            
+            # 💡 [추가] 로그아웃 버튼 숨김 (로그인 창에서는 필요 없음)
+            self.logout_button.place_forget()
 
     def _apply_loaded_data(self, data):
         """로드된 데이터를 앱의 상태에 적용합니다."""
@@ -851,7 +987,7 @@ class ResponsiveApp:
         # self._stop_loading_animation() 
         self.display_pokemon() # 로드된 포켓몬 이미지 표시
         
-        self.logout_button.place(relx=0.95, rely=0.02, anchor="ne", x=-10, y=5)
+        self.logout_button.place(relx=1.0, rely=0.0, x=-10, y=10, anchor="ne")
         self._show_xp_bar() 
         self.root.title(f"To Do Monster - {self.current_user}")
 
@@ -930,13 +1066,32 @@ class ResponsiveApp:
         """XP 바와 정보를 표시합니다."""
         self.xp_canvas.place(relx=0.5, rely=0.08, anchor="n", relwidth=0.9, height=20)
         self.xp_info_label.place(relx=0.5, rely=0.11, anchor="n", relwidth=0.9)
-        self.xp_frame_spacer.pack(pady=20) # 레이아웃을 위해 스페이서 재배치
+        #self.xp_frame_spacer.pack(pady=20) # 레이아웃을 위해 스페이서 재배치
+        
+    def _draw_xp_bar(self):
+        """XP 바를 다시 그리고 캔버스에 레벨 텍스트를 표시합니다."""
+        
+        # ... (캔버스 크기 및 바 그리는 로직)
+        canvas_width = self.xp_canvas.winfo_width()
+        canvas_height = self.xp_canvas.winfo_height()
+        
+        # 💡 [수정] 텍스트가 XP 바와 겹치지 않도록, 텍스트를 XP_info_label로 옮겼으므로,
+        # XP 캔버스 내부에는 게이지 바만 그립니다.
+        
+        # (만약 XP 캔버스 안에 텍스트를 그려야 한다면:)
+        # self.xp_canvas.create_text(
+        #     canvas_width / 2, # X 중앙
+        #     canvas_height / 2, # Y 중앙
+        #     text=f"Lv.{self.current_level}", 
+        #     fill="black", 
+        #     font=("DungGeunMo", 12)
+        # )
         
     def _hide_xp_bar(self):
         """XP 바와 정보를 숨깁니다."""
         self.xp_canvas.place_forget()
         self.xp_info_label.place_forget()
-        self.xp_frame_spacer.pack_forget()
+        #self.xp_frame_spacer.pack_forget()
 
     def update_xp_bar(self):
         """경험치 바를 현재 경험치에 맞게 업데이트합니다."""
@@ -954,6 +1109,21 @@ class ResponsiveApp:
         
         info_text = f"Level {self.evolution_stage} | XP: {self.current_xp}/{self.total_xp_needed}"
         self.xp_info_label.config(text=info_text)
+        
+    def clear_task_list(self):
+        """
+        할 일 목록 프레임 내의 모든 TaskItem 위젯을 파괴하여 목록을 비웁니다.
+        """
+        # self.task_list_frame은 TaskItem 위젯들의 부모 프레임입니다.
+        for widget in self.task_list_frame.winfo_children():
+            widget.destroy()
+            
+        # 캔버스의 스크롤 영역을 초기화 (빈 상태로 업데이트)
+        self.update_scrollregion() 
+        
+        # 💡 [필수] 내부 데이터 구조(예: self.task_items 리스트 등)도 함께 비워야 합니다.
+        # self.task_items 리스트를 사용하고 있다면:
+        # self.task_items.clear()
 
     # ------------------- 할 일 추가 로직 -------------------
 
@@ -1001,6 +1171,36 @@ class ResponsiveApp:
             self.task_list_canvas.yview_moveto(1)
         else:
             print("경고: 태스크 이름이 비어 있습니다.")
+            
+    def _check_pokemon_load_completion(self, future):
+        """백그라운드 포켓몬 로드 작업이 완료되었는지 확인하고 UI를 업데이트합니다."""
+        if future.done():
+            try:
+                raw_image = future.result()
+                
+                # 💡 [핵심] 로딩 완료 후 애니메이션 중지
+                self._stop_loading_animation() 
+                
+                if raw_image:
+                    # 이미지 표시 (비율 유지 로직이 포함된 함수)
+                    self._update_pokemon_display(raw_image)
+                    self.current_pil_image = raw_image # 원본 이미지 저장
+                    
+                    # 💡 [추가] 포켓몬 로드 완료 시 로그아웃 버튼 표시
+                    self.logout_button.place(relx=1.0, rely=0.0, x=-10, y=10, anchor="ne")
+                    # (혹은 place 대신 pack을 사용했다면: self.logout_button.pack(side="right", padx=(0, 10)))
+
+                else:
+                    self.image_label.config(text="이미지 로드 실패", font=self.korean_font)
+
+            except Exception as e:
+                print(f"포켓몬 데이터 로드 중 오류 발생: {e}")
+                self.image_label.config(text="이미지 로드 실패", font=self.korean_font)
+                self._stop_loading_animation() # 실패해도 멈춰야 함
+
+        else:
+            # 아직 로딩 중이면 100ms 후 다시 확인
+            self.root.after(100, self._check_pokemon_load_completion, future)
 
     # ------------------- GUI 위젯 및 배치 -------------------
 
@@ -1022,49 +1222,71 @@ class ResponsiveApp:
             bg="Ivory", 
             fg="#F39C12"
         )
-        self.title_label.place(relx=0.5, rely=0.03, anchor="n")
+        self.title_label.place(relx=0.5, rely=0.03, anchor="n") # 상단 중앙 (3% 위치)
 
         # 2. 포켓몬 영역
         self.pokemon_frame = tk.Frame(self.main_frame, bg="Ivory")
         self.pokemon_frame.place(relx=0.5, rely=0.15, anchor="n", relwidth=0.9, height=200)
-
+        
         self.image_label = tk.Label(
             self.pokemon_frame,
             bg="Ivory",
             text="로딩 중...", # 초기 텍스트
             font=("DungGeunMo", 14)
         )
+        # 이미지 레이블 크기 고정 및 팩
+        self.image_label.config(width=self.POKEMON_IMAGE_SIZE[0], height=self.POKEMON_IMAGE_SIZE[1])
+        self.image_label.pack_propagate(False) 
         self.image_label.pack(pady=(10, 0))
         
-        # 💡 [수정] 이미지 레이블 크기 고정
-        self.image_label.config(width=self.POKEMON_IMAGE_SIZE[0], height=self.POKEMON_IMAGE_SIZE[1])
-        self.image_label.pack_propagate(False) # 자식 위젯이 크기를 변경하지 못하게 함
-
-        self.pokemon_info_label = tk.Label(
+        """self.pokemon_info_label = tk.Label(
             self.pokemon_frame,
             text="이름: ?, 도감번호: ?",
             bg="Ivory",
             font=self.korean_font
         )
-        self.pokemon_info_label.pack(pady=(0, 10))
+        self.pokemon_info_label.pack(pady=(0, 10))"""
 
-        # 3. 경험치 바 (로그인 후 표시)
-        self.xp_canvas = tk.Canvas(self.main_frame, bg="Ivory", highlightthickness=0)
-        self.xp_info_label = tk.Label(self.main_frame, text="", bg="Ivory", font=("pixelFont-7-8x14-sproutLands", 10))
+        # 3. 💡 [수정] 경험치 바 (타이틀 가림 방지 및 place 배치)
+        self.xp_frame = tk.Frame(self.main_frame, bg="LightGray")
+        # 포켓몬 영역(0.15~약 0.38) 아래인 0.40 위치에 배치
+        self.xp_frame.place(relx=0.5, rely=0.45, anchor="n", relwidth=0.9, height=40)
+        
+        #경험치 정보 레이블
+        self.xp_info_label = tk.Label(
+            self.xp_frame, 
+            text="Lv.? 이름:? (0/100)", # 초기 텍스트
+            bg="Ivory", 
+            font=("pixelFont-7-8x14-sproutLands", 10)
+        )
+        self.xp_info_label.pack(side="top", fill="x", pady=(0,0)) # XP 프레임 내부에 배치
+        
+        #경험치 캔버스
+        self.xp_canvas = tk.Canvas(self.xp_frame, bg="Ivory", highlightthickness=0)
+        self.xp_canvas.pack(side="bottom", fill="x", expand=True, pady=(0,0)) # XP 프레임 내부에 배치
 
-        # 레이아웃을 위한 빈 공간 (spacer)
-        self.xp_frame_spacer = tk.Frame(self.main_frame, bg="Ivory", height=20)
+        # 4. 💡 [수정] 로그아웃 버튼 (XP 바 밑으로, place 배치)
+        self.button_frame = tk.Frame(self.main_frame, bg="Ivory")
+        self.button_frame.place(relx=0.5, rely=0.52, anchor="n", relwidth=0.9, height=30) # XP 바 아래로 이동 (0.45 + 40px/H)
+        
+        self.logout_button = tk.Button(
+            self.button_frame,
+            text="로그아웃",
+            font=("DungGeunMo", 10),
+            command=self._logout_user,
+            bg="#e74c3c",  # Red
+            fg="white"
+        )
+        self.logout_button.pack(side="right", padx=10, pady=2) # button_frame 내에서 pack 사용
 
-        # 4. 할 일 입력 프레임
+        # 5. 💡 [수정] 할 일 입력 프레임 (rely=0.55로 이동)
         self.input_frame = tk.Frame(self.main_frame, bg="Ivory")
-        self.input_frame.place(relx=0.5, rely=0.42, anchor="n", relwidth=0.9)
+        self.input_frame.place(relx=0.5, rely=0.58, anchor="n", relwidth=0.9)
 
-        # 태스크 입력 엔트리
         self.task_entry = tk.Entry(self.input_frame, font=(self.default_font[0], 24))
         self.task_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
         self.task_entry.bind('<Return>', lambda e: self.add_task())
 
-        # 추가 버튼
         self.add_button = tk.Button(
             self.input_frame,
             text="추가",
@@ -1075,74 +1297,40 @@ class ResponsiveApp:
         )
         self.add_button.pack(side="right", fill="y", padx=(5, 0))
 
-        # 5. 태스크 옵션 프레임 (반복/마감일)
+        # 6. 💡 [수정] 태스크 옵션 프레임 (rely=0.62로 이동)
         self.task_options_frame = tk.Frame(self.main_frame, bg="Ivory")
-        self.task_options_frame.place(relx=0.5, rely=0.48, anchor="n", relwidth=0.9)
+        self.task_options_frame.place(relx=0.5, rely=0.65, anchor="n", relwidth=0.9)
 
-        # 매일 반복 체크박스
-        self.recurring_checkbox = tk.Checkbutton(
-            self.task_options_frame,
-            text="매일 반복",
-            variable=self.is_recurring,
-            bg="Ivory",
-            activebackground="Ivory",
-            font=self.korean_font
-        )
+        # ... (self.recurring_checkbox 및 self.due_date_button 코드는 그대로 유지)
+        self.recurring_checkbox = tk.Checkbutton(self.task_options_frame, text="매일 반복", variable=self.is_recurring, bg="Ivory", activebackground="Ivory", font=self.korean_font)
         self.recurring_checkbox.pack(side="left")
 
-        # 마감일 버튼
-        self.due_date_button = tk.Button(
-            self.task_options_frame,
-            textvariable=self.due_date_str,
-            command=self._show_calendar_popup,
-            bg="#e67e22", 
-            fg="white",
-            font=self.korean_font
-        )
+        self.due_date_button = tk.Button(self.task_options_frame, textvariable=self.due_date_str, command=self._show_calendar_popup, bg="#e67e22", fg="white", font=self.korean_font)
         self.due_date_button.pack(side="left", padx=5)
 
-        # 6. 할 일 목록 영역 (Canvas + Frame)
+        # 7. 💡 [수정] 할 일 목록 영역 (rely=0.68로 이동)
         self.task_canvas_frame = tk.Frame(self.main_frame, bg="Ivory")
-        self.task_canvas_frame.place(relx=0.5, rely=0.55, anchor="n", relwidth=0.9, relheight=0.40) # 높이 40%
-
+        self.task_canvas_frame.place(relx=0.5, rely=0.71, anchor="n", relwidth=0.9, relheight=0.25)
+    
+        # ... (이하 task_list_canvas, scrollbar, task_list_frame 관련 코드는 그대로 유지)
         self.task_list_canvas = tk.Canvas(self.task_canvas_frame, bg="Ivory", highlightthickness=0)
         self.task_list_canvas.pack(side="left", fill="both", expand=True)
 
-        self.task_list_scrollbar = tk.Scrollbar(
-            self.task_canvas_frame, 
-            orient="vertical", 
-            command=self.task_list_canvas.yview
-        )
+        self.task_list_scrollbar = tk.Scrollbar(self.task_canvas_frame, orient="vertical", command=self.task_list_canvas.yview)
         self.task_list_scrollbar.pack(side="right", fill="y")
 
         self.task_list_canvas.config(yscrollcommand=self.task_list_scrollbar.set)
         
-        # 캔버스 내부에 프레임 생성 (실제 TaskItem이 배치될 곳)
         self.task_list_frame = tk.Frame(self.task_list_canvas, bg="Ivory")
         self.task_list_canvas.create_window((0, 0), window=self.task_list_frame, anchor="nw", tags="self.task_list_frame")
         
-        # 스크롤 영역 업데이트 바인딩
         self.task_list_frame.bind("<Configure>", lambda e: self.update_scrollregion())
-
-        # 마우스 스크롤 바인딩 (Windows, Linux, macOS)
         self.task_list_canvas.bind_all('<MouseWheel>', self._on_mousewheel) 
-        self.task_list_canvas.bind_all('<Button-4>', self._on_mousewheel) # Linux Scroll Up
-        self.task_list_canvas.bind_all('<Button-5>', self._on_mousewheel) # Linux Scroll Down
+        self.task_list_canvas.bind_all('<Button-4>', self._on_mousewheel) 
+        self.task_list_canvas.bind_all('<Button-5>', self._on_mousewheel) 
         
-        # 💡 드래그 스크롤 바인딩
         self.task_list_canvas.bind("<ButtonPress-1>", self._start_drag)
         self.task_list_canvas.bind("<B1-Motion>", self._on_drag)
-
-        # 7. 로그아웃 버튼 (로그인 후 표시)
-        self.logout_button = tk.Button(
-            self.main_frame,
-            text="로그아웃",
-            command=self.logout,
-            bg="#3498db", 
-            fg="white",
-            font=self.korean_font,
-            relief="flat"
-        )
         
     def _show_calendar_popup(self):
         """달력 팝업을 표시하여 마감일을 선택하게 합니다."""
