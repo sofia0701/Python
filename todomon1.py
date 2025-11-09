@@ -438,29 +438,52 @@ class ResponsiveApp:
     # ------------------- API 통신 및 포켓몬 로딩 -------------------
     
     def _fetch_pokemon_data(self, pokemon_id):
-        """PokeAPI에서 포켓몬 데이터를 가져옵니다."""
-        url = f"https://pokeapi.co/api/v2/pokemon/{pokemon_id}/"
-        try:  
-            response = requests.get(url, timeout=10)
+        """PokeAPI에서 포켓몬 데이터와 이미지를 가져와 (이미지 객체, 이름, ID) 튜플을 반환합니다."""
+        pokemon_url = f"https://pokeapi.co/api/v2/pokemon/{pokemon_id}/"
+        
+        try: 
+            # 1. 기본 포켓몬 데이터 가져오기 (이미지 URL 포함)
+            response = requests.get(pokemon_url, timeout=10)
             response.raise_for_status()
             data = response.json()
             
+            # 2. 종(species) 데이터 가져오기 (한글 이름 포함)
             species_url = data['species']['url']
             species_response = requests.get(species_url, timeout=10)
             species_response.raise_for_status()
             species_data = species_response.json()
             
+            # 3. 한글 이름 추출
             korean_name = next(
                 (name_info['name'] for name_info in species_data['names'] if name_info['language']['name'] == 'ko'),
                 data['name'].capitalize()
             )
             
-            data['korean_name'] = korean_name
+            # 4. 이미지 URL 추출 (고화질 official-artwork 선호)
+            image_url = data['sprites']['other'].get('official-artwork', {}).get('front_default')
+            if not image_url:
+                # Fallback: 일반 스프라이트
+                image_url = data['sprites']['front_default']
             
-            return data
+            if not image_url:
+                print(f"포켓몬 이미지 URL을 찾을 수 없습니다. (ID: {pokemon_id})")
+                return None
+                
+            # 5. 이미지 다운로드
+            image_response = requests.get(image_url, timeout=10)
+            image_response.raise_for_status()
+            
+            # 6. PIL Image 객체 생성 및 RGBA로 변환 (투명도 유지)
+            pil_image = Image.open(BytesIO(image_response.content)).convert("RGBA")
+            
+            # 7. 💡 [핵심 수정] PIL Image 객체와 필요한 정보를 튜플로 반환합니다.
+            return (pil_image, korean_name, pokemon_id)
         
         except requests.exceptions.RequestException as e:
             print(f"포켓몬 데이터 로드 오류 (ID: {pokemon_id}): {e}")
+            return None
+        except Exception as e:
+            print(f"포켓몬 데이터 처리 중 예상치 못한 오류 발생 (ID: {pokemon_id}): {e}")
             return None
         
     def _fetch_evolution_chain_url_async(self, pokemon_id):
@@ -506,20 +529,37 @@ class ResponsiveApp:
 
     def _fetch_evolution_chain_data_async(self, evo_chain_url):
         """진화 체인 데이터를 백그라운드 스레드로 예약합니다."""
-        # 💡 [핵심] 이제 누락된 함수를 호출할 수 있습니다.
+        # 💡 self.executor가 __init__에서 concurrent.futures.ThreadPoolExecutor로 초기화되어 있어야 합니다.
         future = self.executor.submit(self._fetch_evolution_chain_data, evo_chain_url)
         future.add_done_callback(lambda f: self.root.after(0, self._check_evolution_chain_data_completion, f))
 
     # 💡 [해결] 실제로 누락된 함수 _fetch_evolution_chain_data를 정의합니다.
     def _fetch_evolution_chain_data(self, evo_chain_url):
-        """(스레드에서 실행) 진화 체인 데이터 자체를 가져와서 파싱합니다."""
-        # ... 여기에 진화 데이터를 가져와 파싱하는 로직을 구현합니다.
-        return None # 실제 진화 체인 정보를 반환해야 합니다.
+        try:
+            response = requests.get(evo_chain_url, timeout=5)
+            response.raise_for_status()
+            data = response.json()
+            
+            # 💡 필요한 데이터만 파싱하여 반환합니다. (여기서는 간단히 전체 데이터를 반환)
+            # 실제 구현에서는 필요한 진화 단계 정보를 추출하여 반환해야 합니다.
+            return data 
+        except requests.exceptions.RequestException as e:
+            print(f"진화 체인 데이터 로드 오류: {e}")
+            return None # 실패 시 None 반환
         
     def _check_evolution_chain_data_completion(self, future):
-        """진화 체인 데이터 로드 완료 후 호출됩니다."""
-        # ... 여기에 진화 정보를 UI에 업데이트하는 로직을 구현합니다.
-        pass
+        try:
+            # 💡 진화 체인 데이터 (dict 또는 None)
+            evo_data = future.result() 
+            
+            if evo_data:
+                print("진화 체인 데이터 로드 완료. UI 업데이트 필요.")
+                # 💡 여기에 진화 체인 데이터를 파싱하여 UI에 표시하는 로직을 구현해야 합니다.
+                # 예: self._update_evolution_info(evo_data)
+            else:
+                print("진화 체인 데이터 로드 실패.")
+        except Exception as e:
+            print(f"진화 체인 데이터 콜백 처리 중 오류 발생: {e}")
 
     def _parse_evolution_chain(self, url):
         """진화 체인 URL에서 포켓몬 ID 목록을 파싱합니다."""
